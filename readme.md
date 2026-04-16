@@ -56,6 +56,7 @@ t2json https://tidal.com/browse/track/123
 
 * Python 3.8+
 * Tidal account (for API access)
+* JSON Editor
 
 ## 📄 Output Example
 
