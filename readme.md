@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="t2json banner">
+</p>
+
 # t2json
 
 A powerful CLI tool to fetch detailed song credits from Tidal and export them to JSON.
