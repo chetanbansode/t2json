@@ -1,0 +1,60 @@
+# t2json
+
+A powerful CLI tool to fetch detailed song credits from Tidal and export them to JSON.
+
+## ✨ Features
+
+* Fetch credits by:
+
+  * Track URL / ID
+  * Album URL
+  * Playlist URL
+  * Search
+  * Audio files (via ISRC)
+  * Local folders
+* Clean and structured JSON output (Kid3 compatible)
+* Interactive CLI with progress bar and results table
+* Persistent settings and session handling
+
+## 📦 Installation
+
+```bash
+pip install t2json
+```
+
+## 🚀 Usage
+
+```bash
+t2json
+```
+
+Or directly:
+
+```bash
+t2json "song name"
+t2json https://tidal.com/browse/track/123
+```
+
+## ⚙️ Requirements
+
+* Python 3.8+
+* Tidal account (for API access)
+
+## 📄 Output Example
+
+```json
+{
+  "Title": "STAY",
+  "Artist": "The Kid LAROI, Justin Bieber",
+  "Producer": "Charlie Puth, Blake Slatkin",
+  ...
+}
+```
+
+## 🧠 About
+
+Built for music enthusiasts, editors, and audio engineers who care about detailed metadata.
+
+## 📜 License
+
+MIT
