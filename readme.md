@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="t2json banner">
+  <img src="assets/t2json.png" alt="t2json banner">
 </p>
 
 # t2json
