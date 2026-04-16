@@ -25,6 +25,14 @@ A powerful CLI tool to fetch detailed song credits from Tidal and export them to
 * Interactive CLI with progress bar and results table
 * Persistent settings and session handling
 
+## 📸 Preview
+
+### CLI Demo
+![CLI Demo](assets/demo1.png)
+
+### Results Table
+![Results](assets/demo2.png)
+
 ## 📦 Installation
 
 ```bash
