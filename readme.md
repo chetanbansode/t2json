@@ -54,7 +54,3 @@ t2json https://tidal.com/browse/track/123
 ## 🧠 About
 
 Built for music enthusiasts, editors, and audio engineers who care about detailed metadata.
-
-## 📜 License
-
-MIT
