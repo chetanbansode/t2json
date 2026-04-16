@@ -6,7 +6,8 @@
   <!-- <img src="https://img.shields.io/pypi/dm/t2json"> -->
   <img src="https://img.shields.io/github/license/chetanbansode/t2json">
 </p>
-> ⚠️ This tool fetches metadata only. It does not download or distribute audio.
+
+Note: ⚠️ This tool fetches metadata only. It does not download or distribute audio.
 
 # t2json
 
