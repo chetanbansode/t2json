@@ -6,6 +6,7 @@
   <!-- <img src="https://img.shields.io/pypi/dm/t2json"> -->
   <img src="https://img.shields.io/github/license/chetanbansode/t2json">
 </p>
+> ⚠️ This tool fetches metadata only. It does not download or distribute audio.
 
 # t2json
 
@@ -72,3 +73,15 @@ t2json https://tidal.com/browse/track/123
 ## 🧠 About
 
 Built for music enthusiasts, editors, and audio engineers who care about detailed metadata.
+
+## ⚠️ Disclaimer
+
+This tool is intended for educational and personal use only.
+
+`t2json` does not host, store, or distribute any copyrighted content.
+It simply fetches publicly available metadata (song credits) from Tidal.
+
+This project is not affiliated with, endorsed by, or associated with Tidal.
+
+Users are responsible for complying with Tidal's terms of service and all applicable laws.
+
