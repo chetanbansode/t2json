@@ -37,7 +37,7 @@ A powerful CLI tool to fetch detailed song credits from Tidal and export them to
 
 ### Results Table
 <p align="center">
-  <img src="assets/ss2.png" width="500">
+  <img src="assets/demo2.png" width="500">
 </p>
 
 ## 📦 Installation
