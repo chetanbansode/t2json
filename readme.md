@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/t2json.png" alt="t2json banner">
+  <img src="assets/header.png" alt="t2json banner">
 </p>
 <p align="center">
   <img src="https://img.shields.io/pypi/v/t2json">
