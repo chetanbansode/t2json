@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "t2json"
-version = "0.1.1"
+version = "0.1.3"
 description = "Fetch song credits directly from Tidal and export them to JSON Format."
 requires-python = ">=3.9"
 dependencies = [
