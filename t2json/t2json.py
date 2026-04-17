@@ -13,6 +13,8 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import quote, quote_plus
+from urllib.request import urlopen
 
 missing = []
 try:
@@ -56,6 +58,8 @@ class AppSettings:
     progress_bar_width: int = 36
     save_session_on_exit: bool = True
     credits_save_dir: str = ""
+    lastfm_api_key: str = ""
+    fetch_genres: bool = False
 
 
 ROLE_MAP = {
@@ -166,6 +170,8 @@ def load_settings():
         progress_bar_width=int(raw.get("progress_bar_width", defaults.progress_bar_width)),
         save_session_on_exit=bool(raw.get("save_session_on_exit", defaults.save_session_on_exit)),
         credits_save_dir=str(raw.get("credits_save_dir", defaults.credits_save_dir)).strip(),
+        lastfm_api_key=str(raw.get("lastfm_api_key", defaults.lastfm_api_key)).strip(),
+        fetch_genres=bool(raw.get("fetch_genres", defaults.fetch_genres)),
     )
     if not SETTINGS_FILE.exists():
         save_settings(settings)
@@ -212,6 +218,13 @@ def prompt_int_setting(label, current, minimum=1, maximum=80):
     return value
 
 
+def prompt_text_setting(label, current):
+    answer = console.input(f"  [cyan]{label}[/] [Enter = current]: ").strip()
+    if not answer:
+        return current
+    return answer
+
+
 def format_save_dir(value):
     return value if value else "Current folder"
 
@@ -252,8 +265,11 @@ def show_settings(settings):
     table.add_row("Progress bar width", str(settings.progress_bar_width))
     table.add_row("Save session on exit", format_on_off(settings.save_session_on_exit))
     table.add_row("Credit file's path", format_save_dir(settings.credits_save_dir))
+    table.add_row("Fetch genres", format_on_off(settings.fetch_genres))
+    table.add_row("Last.fm API key", "Set" if settings.lastfm_api_key else "Not set")
+    table.add_row("[dim]Note[/]", "[dim]Genre lookup uses Last.fm and can be slower or limited[/]")
     console.print(table)
-    console.print(f"  [dim]Config file:[/] [cyan]{SETTINGS_FILE.name}[/]")
+    console.print(f"  [dim]Config file:[/] [cyan]{SETTINGS_FILE}[/]")
     console.print()
 
 
@@ -279,6 +295,9 @@ def show_launcher_menu(settings):
     menu.add_row("Progress bar width", str(settings.progress_bar_width))
     menu.add_row("Save session on exit", format_on_off(settings.save_session_on_exit))
     menu.add_row("Credit file's path", format_save_dir(settings.credits_save_dir))
+    menu.add_row("Fetch genres", format_on_off(settings.fetch_genres))
+    menu.add_row("Last.fm API key", "Set" if settings.lastfm_api_key else "Not set")
+    menu.add_row("[dim]Note[/]", "[dim]Genre lookup uses Last.fm and can be slower or limited[/]")
     console.print(menu)
     console.print()
 
@@ -291,6 +310,8 @@ def configure_settings(settings):
     settings.progress_bar_width = prompt_int_setting("Progress bar width", settings.progress_bar_width)
     settings.save_session_on_exit = prompt_bool_setting("Save session on exit", settings.save_session_on_exit)
     settings.credits_save_dir = prompt_path_setting("Credit file's path", settings.credits_save_dir)
+    settings.fetch_genres = prompt_bool_setting("Fetch genres", settings.fetch_genres)
+    settings.lastfm_api_key = prompt_text_setting("Last.fm API key", settings.lastfm_api_key)
 
     save_settings(settings)
     console.print()
@@ -639,13 +660,160 @@ def get_track_year(track):
     return ""
 
 
-def build_kid3_row(track, credits_grouped, file_path=""):
+def get_album_artist(track):
+    album = getattr(track, "album", None)
+    if not album:
+        return "; ".join(artist.name for artist in track.artists)
+
+    album_artist = getattr(album, "artist", None)
+    if album_artist and getattr(album_artist, "name", None):
+        return album_artist.name
+
+    album_artists = getattr(album, "artists", None)
+    if album_artists:
+        names = [artist.name for artist in album_artists if getattr(artist, "name", None)]
+        if names:
+            return "; ".join(names)
+
+    return "; ".join(artist.name for artist in track.artists)
+
+
+def clean_lastfm_tag(tag):
+    tag = (tag or "").strip()
+    if not tag:
+        return ""
+    lowered = tag.lower()
+    blocked = {
+        "seen live",
+        "favorites",
+        "favourite",
+        "favorite",
+        "awesome",
+        "love",
+        "my favorites",
+        "under 2000 listeners",
+        "under 200 listeners",
+        "male vocalists",
+        "female vocalists",
+    }
+    if lowered in blocked:
+        return ""
+    if any(char.isdigit() for char in lowered):
+        return ""
+    if len(tag) > 24:
+        return ""
+    if not re.fullmatch(r"[a-zA-Z][a-zA-Z &/+\-]*", tag):
+        return ""
+    return tag.title()
+
+
+def extract_lastfm_top_tags(payload):
+    tags = payload.get("toptags", {}).get("tag", [])
+    if isinstance(tags, dict):
+        tags = [tags]
+
+    genres = []
+    seen = set()
+    for item in tags:
+        name = clean_lastfm_tag(item.get("name", ""))
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        genres.append(name)
+        if len(genres) == 2:
+            break
+    return genres
+
+
+def fetch_lastfm_top_tags(method, params, api_key):
+    query = {
+        "method": method,
+        "api_key": api_key,
+        "format": "json",
+        "autocorrect": "1",
+    }
+    query.update({key: value for key, value in params.items() if value})
+    url = "https://ws.audioscrobbler.com/2.0/?" + "&".join(
+        f"{quote_plus(str(key))}={quote_plus(str(value))}" for key, value in query.items()
+    )
+    try:
+        with urlopen(url, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+    return extract_lastfm_top_tags(payload)
+
+
+def fetch_lastfm_page_tags(artist, title_or_album):
+    if not artist or not title_or_album:
+        return []
+
+    url = f"https://www.last.fm/music/{quote_plus(artist)}/{quote(title_or_album, safe='')}"
+    try:
+        with urlopen(url, timeout=8) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return []
+
+    matches = re.findall(r'href="/tag/([^"]+)"', html, flags=re.IGNORECASE)
+    genres = []
+    seen = set()
+    for raw in matches:
+        name = clean_lastfm_tag(raw.replace("+", " ").replace("%20", " "))
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        genres.append(name)
+        if len(genres) == 2:
+            break
+    return genres
+
+
+def get_track_genres(track, settings):
+    api_key = settings.lastfm_api_key.strip()
+    if not api_key or not settings.fetch_genres:
+        return ""
+
+    artist_names = [artist.name for artist in getattr(track, "artists", []) if getattr(artist, "name", None)]
+    primary_artist = artist_names[0] if artist_names else ""
+    title = getattr(track, "name", "") or getattr(track, "title", "")
+    album_name = track.album.name if getattr(track, "album", None) else ""
+
+    genres = fetch_lastfm_top_tags("track.getTopTags", {"artist": primary_artist, "track": title}, api_key)
+    if genres:
+        return ", ".join(genres)
+
+    # Some Last.fm pages expose tags at the single/album level rather than the track API endpoint.
+    genres = fetch_lastfm_top_tags("album.getTopTags", {"artist": primary_artist, "album": album_name}, api_key)
+    if genres:
+        return ", ".join(genres)
+
+    genres = fetch_lastfm_page_tags(primary_artist, title)
+    if genres:
+        return ", ".join(genres)
+
+    genres = fetch_lastfm_page_tags(primary_artist, album_name)
+    if genres:
+        return ", ".join(genres)
+
+    return ""
+
+
+def build_kid3_row(track, credits_grouped, settings, file_path=""):
     row = {
         "FILE PATH": file_path,
         "Title": track.name,
         "Artist": "; ".join(artist.name for artist in track.artists),
+        "Album Artist": get_album_artist(track),
         "Album": track.album.name if track.album else "",
         "Year": get_track_year(track),
+        "Genre": get_track_genres(track, settings),
         "ISRC": getattr(track, "isrc", ""),
         "Comment": "",
         "Picture": "",
@@ -957,7 +1125,7 @@ def process_tracks(session, track_jobs, settings, stats):
                 continue
 
             grouped = format_credits(get_credits(session, track_id))
-            rows.append(build_kid3_row(track, grouped, file_path=file_path))
+            rows.append(build_kid3_row(track, grouped, settings, file_path=file_path))
             record_success(stats, track, grouped)
             progress.advance(task)
 
