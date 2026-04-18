@@ -45,15 +45,35 @@ t2json "Stay The Kid LAROI"
 
 ---
 
+## 📭 Missing credits
+### Problem
+Some fields like producer/composer are missing.
 
+### Solution
+- Not all tracks have full metadata on Tidal
+- Try another version of the track
+- Use official releases instead of remixes
 
+---
 
+## 🐌 Slow performance
+### Solution
+- Check internet speed
+- Disable optional features like genre lookup
+- Avoid very large playlists
 
+---
 
+## 🎵 Last.fm issues (genre missing)
+### Problem
+Genre is missing or delayed.
 
+### Solution
+- Last.fm API may be rate-limited
+- Some tracks are not available in Last.fm database
+- Try again later or ignore genre
 
-
-
+---
 
 
 
