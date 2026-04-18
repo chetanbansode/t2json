@@ -50,3 +50,117 @@ Run:
 
 ```bash
 t2json
+```
+
+---
+
+### Can I use URLs?
+
+Yes, you can use:
+•	Track URL 
+•	Album URL 
+•	Playlist URL
+
+---
+
+### Where are settings saved?
+Settings are saved locally on your system and persist across sessions
+
+---
+
+### Is the output compatible with other tools?
+Yes.
+The JSON format is compatible with tools like Kid3.
+
+---
+
+### Can I customize output format?
+Not currently, but structured JSON is provided for easy parsing
+
+---
+
+### Why are some credits missing?
+Not all tracks on Tidal have complete metadata
+
+---
+
+### Why is genre missing?
+Genre is fetched via Last.fm (optional), which may be slow, fail or be limited.
+
+---
+
+### Does it support batch processing?
+Yes: folders, playlists, and albums.
+
+---
+
+### What is the best way to get accurate data?
+Use track, album URLs instead of search.
+
+## 🔐 Safety
+### Does this tool collect user data?
+No. All operations are local except API requests.
+
+---
+
+### Is my data stored anywhere?
+No external storage is used.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
