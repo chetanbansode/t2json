@@ -17,7 +17,7 @@ pip install t2json
 ```
 ---
 
-🔗 Invalid URL or ID
+## 🔗 Invalid URL or ID
 ### Problem
 Tool fails when using a link or ID.
 
