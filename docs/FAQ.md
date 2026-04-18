@@ -56,10 +56,7 @@ t2json
 
 ### Can I use URLs?
 
-Yes, you can use:
-•	Track URL 
-•	Album URL 
-•	Playlist URL
+Yes, you can use: Track URL, Album URL, and Playlist URL
 
 ---
 
@@ -67,6 +64,8 @@ Yes, you can use:
 Settings are saved locally on your system and persist across sessions
 
 ---
+
+## 📁 Output
 
 ### Is the output compatible with other tools?
 Yes.
@@ -79,6 +78,8 @@ Not currently, but structured JSON is provided for easy parsing
 
 ---
 
+## ⚠️ Issues & Limitations
+
 ### Why are some credits missing?
 Not all tracks on Tidal have complete metadata
 
@@ -89,15 +90,20 @@ Genre is fetched via Last.fm (optional), which may be slow, fail or be limited.
 
 ---
 
+## 🧠 Advanced
+
 ### Does it support batch processing?
 Yes: folders, playlists, and albums.
 
 ---
 
+## 💡 Tips
+
 ### What is the best way to get accurate data?
 Use track, album URLs instead of search.
 
 ## 🔐 Safety
+
 ### Does this tool collect user data?
 No. All operations are local except API requests.
 
