@@ -115,7 +115,7 @@ Yes: folders, playlists, and albums.
 ## 💡 Tips
 
 ### What is the best way to get accurate data?
-Use track, album URLs instead of search.
+Use track or album URLs instead of search.
 
 ## 🔐 Safety
 
