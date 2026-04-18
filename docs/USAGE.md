@@ -19,6 +19,7 @@ Launch the CLI:
 t2json
 ```
 
+
 🔍 Search by Song Name
 ```bash
 t2json "song name"
@@ -29,6 +30,7 @@ Example:
 t2json "Stay The Kid LAROI"
 ```
 
+
 🔗 Fetch by Track URL or ID
 ```bash
 t2json https://tidal.com/browse/track/ID
@@ -38,25 +40,30 @@ OR:
 t2json TRACK_ID
 ```
 
+
 💿 Fetch by Album
 ```bash
 t2json https://tidal.com/browse/album/ID
 ```
+
 
 📜 Fetch by Playlist
 ```bash
 t2json https://tidal.com/browse/playlist/ID
 ```
 
+
 🎧 Fetch from Audio File
 ```bash
 t2json "C:\Music\song.flac"
 ```
 
+
 📂 Fetch from Folder
 ```bash
 t2json "C:\Music\"
 ```
+
 
 ⚙️ Settings
 ```bash
