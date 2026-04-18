@@ -91,3 +91,9 @@ This project is not affiliated with, endorsed by, or associated with Tidal.
 
 Users are responsible for complying with Tidal's terms of service and all applicable laws.
 
+## 📚 Documentation
+
+- 📖 [Usage Guide](docs/USAGE.md)
+- ❓ [FAQ](docs/FAQ.md)
+- 🛠️ [Troubleshooting](docs/TROUBLESHOOTING.md)
+- 💡 [Tips & Tricks](docs/TIPS.md)
