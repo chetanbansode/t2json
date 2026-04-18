@@ -11,10 +11,17 @@ import os
 import re
 import sys
 import time
+from ctypes import windll
 from dataclasses import asdict, dataclass
+from functools import cmp_to_key
 from pathlib import Path
 from urllib.parse import quote, quote_plus
 from urllib.request import urlopen
+
+try:
+    from importlib.metadata import version as package_version
+except ImportError:
+    package_version = None
 
 missing = []
 try:
@@ -49,6 +56,25 @@ APP_DATA_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "t2json"
 SESSION_FILE = APP_DATA_DIR / "tidal_session.json"
 SETTINGS_FILE = APP_DATA_DIR / "tidal_settings.json"
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".aiff", ".wav", ".ogg"}
+LAUNCHER_WIDTH = 108
+
+
+def get_app_version():
+    if package_version:
+        try:
+            return package_version("t2json")
+        except Exception:
+            pass
+
+    pyproject = APP_DIR / "pyproject.toml"
+    if pyproject.exists():
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+        if match:
+            return match.group(1)
+    return "dev"
+
+
+APP_VERSION = get_app_version()
 
 
 @dataclass
@@ -129,7 +155,6 @@ ROLE_MAP = {
     "Associated Performer": "Performer",
     "MainArtist": "Artist",
     "FeaturedArtist": "Featured Artist",
-    "Publisher": "Publisher",
     "Label": "Label",
     "Photography": "Photography",
     "Artwork": "Artwork",
@@ -141,7 +166,6 @@ DEDICATED = {
     "Producer": "Producer",
     "Co-Producer": "Producer",
     "Executive Producer": "Producer",
-    "Publisher": "Publisher",
     "Mixing Engineer": "Mixer",
     "Mastering Engineer": "Masterer",
 }
@@ -281,6 +305,7 @@ def show_launcher_menu(settings):
         border_style=ACCENT,
         header_style="bold white",
         padding=(0, 1),
+        width=LAUNCHER_WIDTH,
     )
     menu.add_column("Item", style=ACCENT, no_wrap=True)
     menu.add_column("Value", style="white")
@@ -411,12 +436,14 @@ def fail(message):
 def print_header():
     title = Text("TIDAL CREDITS FETCHER", style=f"bold {ACCENT}")
     subtitle = Text("Tidal song credits to JSON", style=DIM)
+    version_line = Text(f"Version {APP_VERSION}", style=DIM)
     body = Group(
         Align.center(title),
         Align.center(subtitle),
+        Align.center(version_line),
     )
     console.print()
-    console.print(Panel(body, border_style=ACCENT, padding=(1, 6), expand=False))
+    console.print(Panel(body, border_style=ACCENT, padding=(1, 4), expand=False))
     console.print()
 
 
@@ -529,24 +556,88 @@ def extract_playlist_id(value):
     return match.group(0) if match else None
 
 
-def get_file_isrc(filepath):
+def first_tag_value(audio_file, *keys):
+    if audio_file is None:
+        return ""
+
+    def clean(value):
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        text = str(value).strip()
+        return text
+
+    for key in keys:
+        try:
+            if key in audio_file:
+                value = clean(audio_file[key])
+                if value:
+                    return value
+        except Exception:
+            pass
+
+    tags = getattr(audio_file, "tags", None)
+    if not tags:
+        return ""
+
+    for key in keys:
+        try:
+            value = tags.get(key)
+        except Exception:
+            value = None
+        value = clean(value)
+        if value:
+            return value
+
+    return ""
+
+
+def get_audio_metadata(filepath):
+    metadata = {
+        "title": "",
+        "album": "",
+        "artist": "",
+        "album_artist": "",
+        "year": "",
+        "isrc": "",
+    }
     try:
         import mutagen
 
         audio_file = mutagen.File(filepath)
         if audio_file is None:
-            return None
-        for key in ("isrc", "ISRC"):
-            if key in audio_file:
-                value = audio_file[key]
-                return value[0] if isinstance(value, list) else str(value)
-        if hasattr(audio_file, "tags") and audio_file.tags:
-            tsrc = audio_file.tags.get("TSRC")
-            if tsrc:
-                return str(tsrc)
+            return metadata
+
+        metadata["title"] = first_tag_value(audio_file, "title", "TITLE", "TIT2")
+        metadata["album"] = first_tag_value(audio_file, "album", "ALBUM", "TALB")
+        metadata["artist"] = first_tag_value(audio_file, "artist", "ARTIST", "TPE1")
+        metadata["album_artist"] = first_tag_value(
+            audio_file,
+            "albumartist",
+            "ALBUMARTIST",
+            "album artist",
+            "TPE2",
+        )
+        metadata["year"] = first_tag_value(
+            audio_file,
+            "date",
+            "DATE",
+            "year",
+            "YEAR",
+            "originaldate",
+            "ORIGINALDATE",
+            "TDRC",
+            "TDOR",
+        )
+        metadata["isrc"] = first_tag_value(audio_file, "isrc", "ISRC", "TSRC")
     except Exception:
         pass
-    return None
+    return metadata
+
+
+def get_file_isrc(filepath):
+    return get_audio_metadata(filepath).get("isrc") or None
 
 
 def get_credits(session, track_id):
@@ -663,7 +754,7 @@ def get_track_year(track):
 def get_album_artist(track):
     album = getattr(track, "album", None)
     if not album:
-        return "; ".join(artist.name for artist in track.artists)
+        return ", ".join(artist.name for artist in track.artists)
 
     album_artist = getattr(album, "artist", None)
     if album_artist and getattr(album_artist, "name", None):
@@ -673,9 +764,9 @@ def get_album_artist(track):
     if album_artists:
         names = [artist.name for artist in album_artists if getattr(artist, "name", None)]
         if names:
-            return "; ".join(names)
+            return ", ".join(names)
 
-    return "; ".join(artist.name for artist in track.artists)
+    return ", ".join(artist.name for artist in track.artists)
 
 
 def clean_lastfm_tag(tag):
@@ -809,10 +900,10 @@ def build_kid3_row(track, credits_grouped, settings, file_path=""):
     row = {
         "FILE PATH": file_path,
         "Title": track.name,
-        "Artist": "; ".join(artist.name for artist in track.artists),
+        "Artist": ", ".join(artist.name for artist in track.artists),
         "Album Artist": get_album_artist(track),
         "Album": track.album.name if track.album else "",
-        "Year": get_track_year(track),
+        "Date": get_track_year(track),
         "Genre": get_track_genres(track, settings),
         "ISRC": getattr(track, "isrc", ""),
         "Comment": "",
@@ -830,6 +921,8 @@ def build_kid3_row(track, credits_grouped, settings, file_path=""):
         dedicated_used.add(role)
 
     for role, names in credits_grouped.items():
+        if role in {"Music Publisher", "Publisher"}:
+            continue
         if role not in dedicated_used:
             row[role] = ", ".join(names)
 
@@ -932,6 +1025,133 @@ def detect_source(session, source):
     return {"kind": "search", "value": source}
 
 
+def explorer_name_compare(left, right):
+    try:
+        return windll.shlwapi.StrCmpLogicalW(str(left), str(right))
+    except Exception:
+        left_key = str(left).casefold()
+        right_key = str(right).casefold()
+        if left_key < right_key:
+            return -1
+        if left_key > right_key:
+            return 1
+        return 0
+
+
+def natural_sort_key(value):
+    return cmp_to_key(explorer_name_compare)(value)
+
+
+def normalize_match_text(value):
+    value = (value or "").casefold()
+    value = re.sub(r"[\[\(].*?[\]\)]", " ", value)
+    value = value.replace("&", " and ")
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+def extract_metadata_year(value):
+    return extract_year_value(value)
+
+
+def title_matches(file_title, tidal_title):
+    left = normalize_match_text(file_title)
+    right = normalize_match_text(tidal_title)
+    if not left or not right:
+        return False
+    return left == right or left in right or right in left
+
+
+def artist_overlap(file_metadata, item):
+    file_artists = []
+    for key in ("artist", "album_artist"):
+        raw = normalize_match_text(file_metadata.get(key, ""))
+        if raw:
+            file_artists.extend(part.strip() for part in re.split(r"\b(?:and|,|;|feat|featuring|ft)\b", raw) if part.strip())
+
+    tidal_artists = []
+    for artist in item.get("artists", []):
+        name = normalize_match_text(artist.get("name", ""))
+        if name:
+            tidal_artists.append(name)
+    album = item.get("album") or {}
+    album_artist = normalize_match_text((album.get("artist") or {}).get("name", ""))
+    if album_artist:
+        tidal_artists.append(album_artist)
+
+    return bool(file_artists and tidal_artists and any(a and a in b or b in a for a in file_artists for b in tidal_artists))
+
+
+def score_isrc_match(item, file_metadata):
+    score = 0
+    album = item.get("album") or {}
+    file_album = file_metadata.get("album", "")
+    file_title = file_metadata.get("title", "")
+    file_year = extract_metadata_year(file_metadata.get("year", ""))
+
+    tidal_album = album.get("title") or album.get("name") or ""
+    tidal_title = item.get("title") or item.get("name") or ""
+    tidal_year = extract_year_value(
+        item.get("releaseDate")
+        or item.get("streamStartDate")
+        or album.get("releaseDate")
+        or album.get("streamStartDate")
+        or album.get("year")
+    )
+
+    if file_album:
+        left = normalize_match_text(file_album)
+        right = normalize_match_text(tidal_album)
+        if left and right:
+            if left == right:
+                score += 120
+            elif left in right or right in left:
+                score += 70
+
+    if file_title and tidal_title:
+        if title_matches(file_title, tidal_title):
+            score += 60
+
+    if artist_overlap(file_metadata, item):
+        score += 35
+
+    if file_year and tidal_year:
+        if file_year == tidal_year:
+            score += 25
+        else:
+            try:
+                if abs(int(file_year) - int(tidal_year)) == 1:
+                    score += 5
+            except Exception:
+                pass
+
+    if file_album and not normalize_match_text(file_album) == normalize_match_text(tidal_album):
+        compilation_words = {"greatest hits", "best of", "essentials", "hits", "mix", "playlist"}
+        normalized_album = normalize_match_text(tidal_album)
+        if any(word in normalized_album for word in compilation_words):
+            score -= 20
+
+    return score
+
+
+def find_best_tidal_match_by_isrc(session, isrc, file_metadata):
+    results = session.request.request(
+        "GET",
+        "tracks",
+        params={"isrc": isrc, "countryCode": session.country_code, "limit": 50},
+    ).json()
+    items = results.get("items", [])
+    if not items:
+        return None
+
+    scored = []
+    for index, item in enumerate(items):
+        scored.append((score_isrc_match(item, file_metadata), index, item))
+
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    return scored[0][2]
+
+
 def build_track_jobs(args, session, stats):
     track_jobs = []
 
@@ -975,7 +1195,11 @@ def build_track_jobs(args, session, stats):
         except ImportError:
             sys.exit("Folder mode needs mutagen. Run: pip install mutagen")
 
-        files = [path for path in sorted(folder.iterdir()) if path.suffix.lower() in AUDIO_EXTS]
+        files = [
+            path
+            for path in sorted(folder.iterdir(), key=lambda item: natural_sort_key(item.name))
+            if path.suffix.lower() in AUDIO_EXTS
+        ]
         if not files:
             sys.exit(f"No audio files found in: {folder}")
 
@@ -983,23 +1207,19 @@ def build_track_jobs(args, session, stats):
         console.print()
 
         for file_path in files:
-            isrc = get_file_isrc(file_path)
+            file_metadata = get_audio_metadata(file_path)
+            isrc = file_metadata.get("isrc")
             if not isrc:
                 warn(f"{file_path.name} - no ISRC tag, skipping")
                 stats["failed"].append(f"{file_path.name} - no ISRC tag")
                 continue
             try:
-                results = session.request.request(
-                    "GET",
-                    "tracks",
-                    params={"isrc": isrc, "countryCode": session.country_code, "limit": 1},
-                ).json()
-                items = results.get("items", [])
-                if not items:
+                match = find_best_tidal_match_by_isrc(session, isrc, file_metadata)
+                if not match:
                     warn(f"{file_path.name} - no Tidal match for ISRC {isrc}")
                     stats["failed"].append(f"{file_path.name} - no Tidal match")
                     continue
-                track_jobs.append(make_track_job(items[0]["id"], str(file_path.resolve())))
+                track_jobs.append(make_track_job(match["id"], str(file_path.resolve())))
             except Exception as exc:
                 warn(f"{file_path.name} - ISRC lookup failed: {exc}")
                 stats["failed"].append(f"{file_path.name} - {exc}")
@@ -1007,19 +1227,15 @@ def build_track_jobs(args, session, stats):
 
     if args.file_path and Path(args.file_path).exists() and Path(args.file_path).suffix.lower() in AUDIO_EXTS:
         file_path = Path(args.file_path)
-        isrc = get_file_isrc(file_path)
+        file_metadata = get_audio_metadata(file_path)
+        isrc = file_metadata.get("isrc")
         if not isrc:
             sys.exit(f"{file_path.name} has no ISRC tag.")
         try:
-            results = session.request.request(
-                "GET",
-                "tracks",
-                params={"isrc": isrc, "countryCode": session.country_code, "limit": 1},
-            ).json()
-            items = results.get("items", [])
-            if not items:
+            match = find_best_tidal_match_by_isrc(session, isrc, file_metadata)
+            if not match:
                 sys.exit(f"No Tidal match found for ISRC {isrc}.")
-            track_jobs.append(make_track_job(items[0]["id"], str(file_path.resolve())))
+            track_jobs.append(make_track_job(match["id"], str(file_path.resolve())))
         except Exception as exc:
             sys.exit(f"ISRC lookup failed for {file_path.name}: {exc}")
         return track_jobs
