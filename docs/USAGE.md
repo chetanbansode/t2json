@@ -10,3 +10,5 @@ Built for music enthusiasts, editors, and audio engineers who care about metadat
 
 ```bash
 pip install t2json
+
+## 🚀 Basic Usage
