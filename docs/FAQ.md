@@ -101,7 +101,7 @@ Not all tracks on Tidal have complete metadata
 ---
 
 ### Why is genre missing?
-Genre is fetched via Last.fm (optional), which may be slow, fail or be limited.
+Genre is fetched via Last.fm (optional), which may be slow, limited or fail.
 
 ---
 
