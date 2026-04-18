@@ -13,6 +13,7 @@ It can fetch:
 - Artist
 - Album
 - Year
+- Genre
 - ISRC
 - Producer
 - Composer
@@ -27,6 +28,20 @@ It can fetch:
 ### Does it download music?
 No.  
 `t2json` only fetches metadata (song credits). It does NOT download audio or video.
+
+---
+
+### Do I need a Tidal Premium subscription to fetch credits?
+No. A Free account works just fine.
+
+---
+
+### Why is Last.fm data limited or sometimes missing?
+`t2json` optionally uses Last.fm for additional metadata like genres.
+However:
+- Last.fm API can be rate-limited  
+- Some tracks may not exist in Last.fm database  
+- Responses can be slow or incomplete
 
 ---
 
