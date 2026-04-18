@@ -22,6 +22,7 @@ t2json
 🔍 Search by Song Name
 ```bash
 t2json "song name"
+```
 
 Example:
 ```bash
@@ -31,7 +32,7 @@ t2json "Stay The Kid LAROI"
 🔗 Fetch by Track URL or ID
 ```bash
 t2json https://tidal.com/browse/track/ID
-
+```
 OR:
 ```bash
 t2json TRACK_ID
