@@ -63,9 +63,10 @@ t2json https://tidal.com/browse/track/123
 
 * Python 3.8+ installed
 * Tidal account
+* kid3 (for tagging)
 * Last.fm api key (Optional)
 * JSON Editor (Optional)
-* kid3 (for tagging)
+
 
 ## 📄 Output Example
 
@@ -89,7 +90,7 @@ This tool is intended for educational and personal use only.
 `t2json` does not host, store, or distribute any copyrighted content.
 It simply fetches publicly available metadata (song credits) from Tidal.
 
-This project is not affiliated with, endorsed by, or associated with Tidal.
+This project is not affiliated with, endorsed by, or associated with Tidal
 
 Users are responsible for complying with Tidal's terms of service and all applicable laws.
 
