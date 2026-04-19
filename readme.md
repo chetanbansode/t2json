@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/pypi/dm/t2json">
   <img src="https://img.shields.io/github/license/chetanbansode/t2json">
 </p>
-<p align="center"><strong>v0.2.3</strong></p>
+<h3 align="center"><strong>v0.2.3</strong></h3>
 🚨 Note: This tool fetches metadata only. It does not download or distribute audio.
 
 # t2json
