@@ -61,10 +61,11 @@ t2json https://tidal.com/browse/track/123
 
 ## ⚙️ Requirements
 
-* Python 3.8+
-* Tidal account (for API access)**
+* Python 3.8+ installed
+* Tidal account
 * Last.fm api key (Optional)
 * JSON Editor
+* kid3
 
 ## 📄 Output Example
 
