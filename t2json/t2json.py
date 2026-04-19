@@ -11,7 +11,10 @@ import os
 import re
 import sys
 import time
-from ctypes import windll
+try:
+    from ctypes import windll
+except ImportError:
+    windll = None
 from dataclasses import asdict, dataclass
 from functools import cmp_to_key
 from pathlib import Path
@@ -56,7 +59,8 @@ APP_DATA_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "t2json"
 SESSION_FILE = APP_DATA_DIR / "tidal_session.json"
 SETTINGS_FILE = APP_DATA_DIR / "tidal_settings.json"
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".aiff", ".wav", ".ogg"}
-LAUNCHER_WIDTH = 108
+LAUNCHER_MAX_WIDTH = 96
+LAUNCHER_MIN_WIDTH = 56
 
 
 def get_app_version():
@@ -206,6 +210,18 @@ def save_settings(settings):
     save_json_file(SETTINGS_FILE, asdict(settings))
 
 
+def get_layout_width():
+    terminal_width = console.size.width or LAUNCHER_MAX_WIDTH
+    usable_width = terminal_width - 4
+    return max(LAUNCHER_MIN_WIDTH, min(LAUNCHER_MAX_WIDTH, usable_width))
+
+
+def get_two_column_widths(total_width):
+    item_width = max(18, min(30, int(total_width * 0.38)))
+    value_width = max(24, total_width - item_width - 6)
+    return item_width, value_width
+
+
 def format_on_off(value):
     return "[green]On[/]" if value else "[red]Off[/]"
 
@@ -274,6 +290,8 @@ def prompt_path_setting(label, current):
 
 
 def show_settings(settings):
+    layout_width = get_layout_width()
+    setting_width, value_width = get_two_column_widths(layout_width)
     table = Table(
         title="[bold bright_cyan]Saved Settings[/]",
         title_style="not italic",
@@ -281,9 +299,11 @@ def show_settings(settings):
         border_style=ACCENT,
         header_style="bold white",
         padding=(0, 1),
+        width=layout_width,
+        expand=False,
     )
-    table.add_column("Setting", style=ACCENT)
-    table.add_column("Value", style="white")
+    table.add_column("Setting", style=ACCENT, width=setting_width, no_wrap=False)
+    table.add_column("Value", style="white", width=value_width, no_wrap=False)
     table.add_row("Show results table", format_on_off(settings.show_results_table))
     table.add_row("Show failure details", format_on_off(settings.show_failure_details))
     table.add_row("Progress bar width", str(settings.progress_bar_width))
@@ -298,6 +318,8 @@ def show_settings(settings):
 
 
 def show_launcher_menu(settings):
+    layout_width = get_layout_width()
+    item_width, value_width = get_two_column_widths(layout_width)
     menu = Table(
         title="[bright_cyan]Choices + Saved Settings[/]",
         title_style="not italic",
@@ -305,10 +327,11 @@ def show_launcher_menu(settings):
         border_style=ACCENT,
         header_style="bold white",
         padding=(0, 1),
-        width=LAUNCHER_WIDTH,
+        width=layout_width,
+        expand=False,
     )
-    menu.add_column("Item", style=ACCENT, no_wrap=True)
-    menu.add_column("Value", style="white")
+    menu.add_column("Item", style=ACCENT, width=item_width, no_wrap=False)
+    menu.add_column("Value", style="white", width=value_width, no_wrap=False)
     menu.add_row("exit", "Close the application")
     menu.add_row("settings", "Open settings editor")
     menu.add_row("help", "Show usage examples")
@@ -434,6 +457,7 @@ def fail(message):
 
 
 def print_header():
+    layout_width = get_layout_width()
     title = Text("TIDAL CREDITS FETCHER", style=f"bold {ACCENT}")
     subtitle = Text("Tidal song credits to JSON", style=DIM)
     version_line = Text(f"Version {APP_VERSION}", style=DIM)
@@ -443,11 +467,15 @@ def print_header():
         Align.center(version_line),
     )
     console.print()
-    console.print(Panel(body, border_style=ACCENT, padding=(1, 4), expand=False))
+    console.print(Panel(body, border_style=ACCENT, padding=(1, 1), expand=False, width=layout_width))
     console.print()
 
 
 def print_usage():
+    layout_width = get_layout_width()
+    flag_width = max(14, min(18, int(layout_width * 0.2)))
+    example_width = max(10, min(22, int(layout_width * 0.24)))
+    description_width = max(20, layout_width - flag_width - example_width - 8)
     table = Table(
         title="[bold bright_cyan]Available Commands [/]",
         title_style="not italic",
@@ -455,10 +483,12 @@ def print_usage():
         border_style=ACCENT,
         header_style="bold white",
         padding=(0, 1),
+        width=layout_width,
+        expand=False,
     )
-    table.add_column("Flag", style=ACCENT, no_wrap=True)
-    table.add_column("Description", style="white")
-    table.add_column("Example", style=DIM)
+    table.add_column("Flag", style=ACCENT, no_wrap=False, width=flag_width)
+    table.add_column("Description", style="white", no_wrap=False, width=description_width)
+    table.add_column("Example", style=DIM, no_wrap=False, width=example_width)
 
     rows = [
         ("source", "URL, ID, folder, input file, or search text", "https://tidal.com/browse/album/123"),
@@ -1026,16 +1056,19 @@ def detect_source(session, source):
 
 
 def explorer_name_compare(left, right):
-    try:
-        return windll.shlwapi.StrCmpLogicalW(str(left), str(right))
-    except Exception:
-        left_key = str(left).casefold()
-        right_key = str(right).casefold()
-        if left_key < right_key:
-            return -1
-        if left_key > right_key:
-            return 1
-        return 0
+    if windll is not None:
+        try:
+            return windll.shlwapi.StrCmpLogicalW(str(left), str(right))
+        except Exception:
+            pass
+
+    left_key = str(left).casefold()
+    right_key = str(right).casefold()
+    if left_key < right_key:
+        return -1
+    if left_key > right_key:
+        return 1
+    return 0
 
 
 def natural_sort_key(value):
