@@ -4,14 +4,33 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "t2json"
-version = "0.1.6"
+version = "0.2.0"
 description = "Fetch song credits directly from Tidal and export them to JSON Format."
+readme = "README.md"
 requires-python = ">=3.9"
+authors = [
+    { name = "Chetan" },
+    { email = "developedbychetan@gmail.com" },
+]
+license = { text = "MIT" }
+keywords = ["tidal", "credits", "json", "kid3", "metadata", "music"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio",
+]
 dependencies = [
     "mutagen",
     "rich",
     "tidalapi",
 ]
+
+[project.urls]
+Homepage = "https://github.com/chetanbansode/t2json"
+Repository = "https://github.com/chetanbansode/t2json"
+Downloads = "https://pypi.org/project/t2json/"
 
 [project.scripts]
 t2json = "script:main"
