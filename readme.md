@@ -1,11 +1,11 @@
 <p align="center">
   <img src="assets/t2json.png" alt="t2json banner">
 </p>
-<p align="center">v 0.2.0</p>
 <p align="center">
   <img src="https://img.shields.io/pypi/v/t2json">
   <img src="https://img.shields.io/pypi/dm/t2json">
   <img src="https://img.shields.io/github/license/chetanbansode/t2json">
+  <p align="center">v 0.2.3</p>
 </p>
 
 🚨 Note: This tool fetches metadata only. It does not download or distribute audio.
