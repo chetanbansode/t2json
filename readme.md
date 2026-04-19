@@ -26,6 +26,7 @@ A powerful CLI tool to fetch detailed song credits from Tidal and export them to
 * Clean and structured JSON output (Kid3 compatible)
 * Interactive CLI with progress bar and results table
 * Persistent settings and session handling
+* Custom Tags
 
 ## 📸 Preview
 
