@@ -63,9 +63,8 @@ t2json https://tidal.com/browse/track/123
 
 * Python 3.8+ installed
 * Tidal account
-* kid3 (for tagging)
+* kid3 (Tagging)
 * Last.fm api key (Optional)
-* JSON Editor (Optional)
 
 
 ## 📄 Output Example
