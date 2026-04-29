@@ -9,7 +9,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import threading
 import time
 try:
     from ctypes import windll
@@ -20,6 +22,14 @@ from functools import cmp_to_key
 from pathlib import Path
 from urllib.parse import quote, quote_plus
 from urllib.request import urlopen
+import webbrowser
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import select
+    import termios
+    import tty
 
 try:
     from importlib.metadata import version as package_version
@@ -35,6 +45,7 @@ try:
     from rich import box
     from rich.align import Align
     from rich.console import Console, Group
+    from rich.markup import escape
     from rich.panel import Panel
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
     from rich.rule import Rule
@@ -58,9 +69,17 @@ APP_DIR = Path(__file__).resolve().parent
 APP_DATA_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "t2json"
 SESSION_FILE = APP_DATA_DIR / "tidal_session.json"
 SETTINGS_FILE = APP_DATA_DIR / "tidal_settings.json"
+TAGS_CONFIG_FILE = APP_DATA_DIR / "tags.config"
+BLACKLIST_CONFIG_FILE = APP_DATA_DIR / "blacklist.conf"
 AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".aiff", ".wav", ".ogg"}
 LAUNCHER_MAX_WIDTH = 96
 LAUNCHER_MIN_WIDTH = 56
+
+
+def normalize_config_entry(value):
+    value = (value or "").casefold()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
 
 
 def get_app_version():
@@ -85,11 +104,11 @@ APP_VERSION = get_app_version()
 class AppSettings:
     show_results_table: bool = True
     show_failure_details: bool = True
-    progress_bar_width: int = 36
-    save_session_on_exit: bool = True
     credits_save_dir: str = ""
     lastfm_api_key: str = ""
     fetch_genres: bool = False
+    custom_tags: bool = False
+    blacklisting: bool = False
 
 
 ROLE_MAP = {
@@ -121,6 +140,7 @@ ROLE_MAP = {
     "ElectricGuitar": "Electric Guitar",
     "Electric Guitar": "Electric Guitar",
     "Bass": "Bass",
+    "Bassist": "Bass",
     "Drums": "Drums",
     "Drummer": "Drums",
     "Piano": "Piano",
@@ -174,6 +194,46 @@ DEDICATED = {
     "Mastering Engineer": "Masterer",
 }
 
+DEFAULT_EXPORT_FIELDS = (
+    "Title",
+    "Artist",
+    "Album Artist",
+    "Album",
+    "Date",
+    "Genre",
+    "ISRC",
+    "Comment",
+    "Picture",
+)
+
+OPTIONAL_EXPORT_FIELDS = (
+    "Track Number",
+    "Disc Number",
+    "BPM",
+    "Copyright",
+)
+
+EXPORT_FIELD_ORDER = DEFAULT_EXPORT_FIELDS + OPTIONAL_EXPORT_FIELDS
+
+FIELD_ALIASES = {}
+for canonical, aliases in {
+    "Title": ("title",),
+    "Artist": ("artist",),
+    "Album Artist": ("album artist", "albumartist"),
+    "Album": ("album",),
+    "Date": ("date", "year", "release date"),
+    "Genre": ("genre", "genres"),
+    "ISRC": ("isrc",),
+    "Comment": ("comment",),
+    "Picture": ("picture", "cover", "cover art", "picture cover front", "picture cover"),
+    "Track Number": ("track number", "tracknumber"),
+    "Disc Number": ("disc number", "discnumber"),
+    "BPM": ("bpm",),
+    "Copyright": ("copyright",),
+}.items():
+    for alias in aliases:
+        FIELD_ALIASES[normalize_config_entry(alias)] = canonical
+
 
 def load_json_file(path: Path, fallback):
     if not path.exists():
@@ -195,11 +255,11 @@ def load_settings():
     settings = AppSettings(
         show_results_table=bool(raw.get("show_results_table", defaults.show_results_table)),
         show_failure_details=bool(raw.get("show_failure_details", defaults.show_failure_details)),
-        progress_bar_width=int(raw.get("progress_bar_width", defaults.progress_bar_width)),
-        save_session_on_exit=bool(raw.get("save_session_on_exit", defaults.save_session_on_exit)),
         credits_save_dir=str(raw.get("credits_save_dir", defaults.credits_save_dir)).strip(),
         lastfm_api_key=str(raw.get("lastfm_api_key", defaults.lastfm_api_key)).strip(),
         fetch_genres=bool(raw.get("fetch_genres", defaults.fetch_genres)),
+        custom_tags=bool(raw.get("custom_tags", defaults.custom_tags)),
+        blacklisting=bool(raw.get("blacklisting", defaults.blacklisting)),
     )
     if not SETTINGS_FILE.exists():
         save_settings(settings)
@@ -226,6 +286,10 @@ def format_on_off(value):
     return "[green]On[/]" if value else "[red]Off[/]"
 
 
+def format_login_status():
+    return "[green]Logged in[/]" if SESSION_FILE.exists() else "[red]Not logged in[/]"
+
+
 def prompt_bool_setting(label, current):
     current_text = "Y" if current else "N"
     answer = console.input(
@@ -241,23 +305,6 @@ def prompt_bool_setting(label, current):
     return current
 
 
-def prompt_int_setting(label, current, minimum=1, maximum=80):
-    answer = console.input(
-        f"  [cyan]{label}[/] [[bold]{current}[/], {minimum}-{maximum}, Enter keeps current]: "
-    ).strip()
-    if not answer:
-        return current
-    try:
-        value = int(answer)
-    except ValueError:
-        warn(f"Invalid number for {label}. Keeping {current}.")
-        return current
-    if value < minimum or value > maximum:
-        warn(f"{label} must be between {minimum} and {maximum}. Keeping {current}.")
-        return current
-    return value
-
-
 def prompt_text_setting(label, current):
     answer = console.input(f"  [cyan]{label}[/] [Enter = current]: ").strip()
     if not answer:
@@ -267,6 +314,32 @@ def prompt_text_setting(label, current):
 
 def format_save_dir(value):
     return value if value else "Current folder"
+
+
+def format_config_path(path):
+    if path.exists():
+        return escape(str(path))
+    return escape(f"{path.parent}{os.sep} (create {path.name} here)")
+
+
+def format_custom_tags_status(settings):
+    if not settings.custom_tags:
+        return "[red]Off[/]"
+    if TAGS_CONFIG_FILE.exists():
+        return "[green]On[/]"
+    return "[yellow]On (config missing)[/]"
+
+
+def format_blacklisting_status(settings):
+    if not settings.blacklisting:
+        return "[red]Off[/]"
+    if BLACKLIST_CONFIG_FILE.exists():
+        return "[green]On[/]"
+    return "[yellow]On (config missing)[/]"
+
+
+def format_fetch_genres_status(settings):
+    return f"{format_on_off(settings.fetch_genres)} [dim](Uses Last.fm and can be slower or limited)[/]"
 
 
 def prompt_path_setting(label, current):
@@ -304,16 +377,18 @@ def show_settings(settings):
     )
     table.add_column("Setting", style=ACCENT, width=setting_width, no_wrap=False)
     table.add_column("Value", style="white", width=value_width, no_wrap=False)
+    table.add_row("Tidal account", format_login_status())
     table.add_row("Show results table", format_on_off(settings.show_results_table))
     table.add_row("Show failure details", format_on_off(settings.show_failure_details))
-    table.add_row("Progress bar width", str(settings.progress_bar_width))
-    table.add_row("Save session on exit", format_on_off(settings.save_session_on_exit))
     table.add_row("Credit file's path", format_save_dir(settings.credits_save_dir))
-    table.add_row("Fetch genres", format_on_off(settings.fetch_genres))
+    table.add_row("Fetch Genres", format_fetch_genres_status(settings))
+    table.add_row("Custom Tags", format_custom_tags_status(settings))
+    table.add_row("Blacklisting", format_blacklisting_status(settings))
     table.add_row("Last.fm API key", "Set" if settings.lastfm_api_key else "Not set")
-    table.add_row("[dim]Note[/]", "[dim]Genre lookup uses Last.fm and can be slower or limited[/]")
     console.print(table)
-    console.print(f"  [dim]Config file:[/] [cyan]{SETTINGS_FILE}[/]")
+    console.print(f"  [dim]Config file:[/] [cyan]{escape(str(SETTINGS_FILE))}[/]")
+    console.print(f"  [dim]Tags config:[/] [cyan]{format_config_path(TAGS_CONFIG_FILE)}[/]")
+    console.print(f"  [dim]Blacklist config:[/] [cyan]{format_config_path(BLACKLIST_CONFIG_FILE)}[/]")
     console.print()
 
 
@@ -321,31 +396,32 @@ def show_launcher_menu(settings):
     layout_width = get_layout_width()
     item_width, value_width = get_two_column_widths(layout_width)
     menu = Table(
-        title="[bright_cyan]Choices + Saved Settings[/]",
+        # title="[bright_cyan]Settings[/]",
         title_style="not italic",
         box=box.ROUNDED,
         border_style=ACCENT,
-        header_style="bold white",
+        header_style="bold gold1",
         padding=(0, 1),
         width=layout_width,
         expand=False,
     )
-    menu.add_column("Item", style=ACCENT, width=item_width, no_wrap=False)
-    menu.add_column("Value", style="white", width=value_width, no_wrap=False)
+    menu.add_column("Options", style=ACCENT, width=item_width, no_wrap=False)
+    menu.add_column("Functions", style="white", width=value_width, no_wrap=False)
     menu.add_row("exit", "Close the application")
+    menu.add_row("logout", "Sign out of the saved Tidal account")
     menu.add_row("settings", "Open settings editor")
     menu.add_row("help", "Show usage examples")
-    menu.add_row("URL / ID / folder / file / search", "Fetch credits from the source")
+    menu.add_row("URL / folder / file / search", "Fetch credits from the source")
     menu.add_section()
-    menu.add_row("[dim]Setting[/]", "[dim]Current value[/]")
+    menu.add_row("[bold gold1]Setting[/]", "[bold gold1]Current value[/]", end_section=True)
+    menu.add_row("Tidal account", format_login_status())
     menu.add_row("Show results table", format_on_off(settings.show_results_table))
     menu.add_row("Show failure details", format_on_off(settings.show_failure_details))
-    menu.add_row("Progress bar width", str(settings.progress_bar_width))
-    menu.add_row("Save session on exit", format_on_off(settings.save_session_on_exit))
     menu.add_row("Credit file's path", format_save_dir(settings.credits_save_dir))
-    menu.add_row("Fetch genres", format_on_off(settings.fetch_genres))
+    menu.add_row("Fetch Genres", format_fetch_genres_status(settings))
+    menu.add_row("Custom Tags", format_custom_tags_status(settings))
+    menu.add_row("Blacklisting", format_blacklisting_status(settings))
     menu.add_row("Last.fm API key", "Set" if settings.lastfm_api_key else "Not set")
-    menu.add_row("[dim]Note[/]", "[dim]Genre lookup uses Last.fm and can be slower or limited[/]")
     console.print(menu)
     console.print()
 
@@ -355,10 +431,10 @@ def configure_settings(settings):
 
     settings.show_results_table = prompt_bool_setting("Show results table", settings.show_results_table)
     settings.show_failure_details = prompt_bool_setting("Show failure details", settings.show_failure_details)
-    settings.progress_bar_width = prompt_int_setting("Progress bar width", settings.progress_bar_width)
-    settings.save_session_on_exit = prompt_bool_setting("Save session on exit", settings.save_session_on_exit)
     settings.credits_save_dir = prompt_path_setting("Credit file's path", settings.credits_save_dir)
-    settings.fetch_genres = prompt_bool_setting("Fetch genres", settings.fetch_genres)
+    settings.fetch_genres = prompt_bool_setting("Fetch Genres", settings.fetch_genres)
+    settings.custom_tags = prompt_bool_setting("Custom Tags", settings.custom_tags)
+    settings.blacklisting = prompt_bool_setting("Blacklisting", settings.blacklisting)
     settings.lastfm_api_key = prompt_text_setting("Last.fm API key", settings.lastfm_api_key)
 
     save_settings(settings)
@@ -375,7 +451,7 @@ def prompt_for_source(settings, show_home=False):
             console.clear()
             print_header()
             show_launcher_menu(settings)
-        value = console.input("  [bold cyan]Enter source[/] [dim](or settings/help/exit)[/]: ").strip()
+        value = console.input("  [bold cyan]Enter source[/] [dim](or exit/logout/settings/help)[/]: ").strip()
         console.print()
         if not value:
             warn("Please enter a URL, ID, folder path, input file, or search text.")
@@ -383,6 +459,8 @@ def prompt_for_source(settings, show_home=False):
             continue
         if value.lower() in {"0", "exit", "quit"}:
             return None
+        if value.lower() in {"logout", "signout", "sign-out", "log out"}:
+            return "__logout__"
         if value.lower() in {"1", "settings"}:
             settings = configure_settings(settings)
             show_home = True
@@ -456,18 +534,97 @@ def fail(message):
     console.print(f"  [red]ERR[/] {message}")
 
 
+def handle_interrupt():
+    console.print()
+    warn("Cancelled by user. Exiting the app.")
+    console.print()
+
+
+class ProcessCancellation(Exception):
+    pass
+
+
+class CancelListener:
+    def __init__(self):
+        self.cancelled = threading.Event()
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.fd = None
+        self.old_term = None
+
+    def __enter__(self):
+        if not sys.stdin or not sys.stdin.isatty():
+            return self
+        if os.name == "nt":
+            self.thread = threading.Thread(target=self._windows_loop, daemon=True)
+            self.thread.start()
+            return self
+        try:
+            self.fd = sys.stdin.fileno()
+            self.old_term = termios.tcgetattr(self.fd)
+            tty.setcbreak(self.fd)
+            self.thread = threading.Thread(target=self._posix_loop, daemon=True)
+            self.thread.start()
+        except Exception:
+            self.fd = None
+            self.old_term = None
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=0.2)
+        if self.fd is not None and self.old_term is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_term)
+            except Exception:
+                pass
+        return False
+
+    def _windows_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                if msvcrt.kbhit():
+                    key = msvcrt.getwch()
+                    if key == " ":
+                        self.cancelled.set()
+                        return
+                    if key in {"\x00", "à"}:
+                        msvcrt.getwch()
+                else:
+                    time.sleep(0.05)
+            except Exception:
+                return
+
+    def _posix_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if ready:
+                    key = sys.stdin.read(1)
+                    if key == " ":
+                        self.cancelled.set()
+                        return
+            except Exception:
+                return
+
+    def raise_if_cancelled(self):
+        if self.cancelled.is_set():
+            raise ProcessCancellation
+
+
 def print_header():
     layout_width = get_layout_width()
     title = Text("TIDAL CREDITS FETCHER", style=f"bold {ACCENT}")
     subtitle = Text("Tidal song credits to JSON", style=DIM)
-    version_line = Text(f"Version {APP_VERSION}", style=DIM)
+    version_line = Text(f"Version {APP_VERSION}  |  By Chetan", style=DIM)
     body = Group(
         Align.center(title),
         Align.center(subtitle),
         Align.center(version_line),
     )
     console.print()
-    console.print(Panel(body, border_style=ACCENT, padding=(1, 1), expand=False, width=layout_width))
+    console.print(Panel(body, border_style=ACCENT, padding=(1, 1), expand=True, width=get_layout_width()))
     console.print()
 
 
@@ -493,6 +650,7 @@ def print_usage():
     rows = [
         ("source", "URL, ID, folder, input file, or search text", "https://tidal.com/browse/album/123"),
         ("--output", "Output filename", "credits.json"),
+        ("--logout", "Delete the saved Tidal session and sign out locally", ""),
         ("--settings", "Open saved settings editor", ""),
         ("--reset-settings", "Reset saved settings to defaults", ""),
     ]
@@ -517,7 +675,50 @@ def save_session(session):
     )
 
 
-def load_session():
+def clear_saved_session():
+    if not SESSION_FILE.exists():
+        return False
+    try:
+        SESSION_FILE.unlink()
+        return True
+    except Exception:
+        return None
+
+
+def normalize_browser_url(url):
+    url = (url or "").strip()
+    if not url:
+        return url
+    if re.match(r"^[a-z][a-z0-9+.-]*://", url, re.I):
+        return url
+    if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}([/:?#].*)?$", url, re.I):
+        return f"https://{url}"
+    return url
+
+
+def open_in_default_browser(url):
+    url = normalize_browser_url(url)
+
+    try:
+        if "com.termux" in os.environ.get("PREFIX", "") or os.environ.get("TERMUX_VERSION"):
+            subprocess.Popen(["termux-open-url", url])
+            return True
+        if os.name == "nt":
+            os.startfile(url)
+            return True
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+            return True
+        subprocess.Popen(["xdg-open", url])
+        return True
+    except Exception:
+        try:
+            return bool(webbrowser.open(url))
+        except Exception:
+            return False
+
+
+def load_session(settings):
     session = tidalapi.Session()
     if SESSION_FILE.exists():
         try:
@@ -545,8 +746,16 @@ def load_session():
         )
     )
     login, future = session.login_oauth()
-    console.print("\n  [bold bright_cyan]Open this URL in your browser:[/]\n")
-    console.print(f"  [link]{login.verification_uri_complete}[/link]\n")
+    login_url = normalize_browser_url(login.verification_uri_complete)
+    browser_opened = open_in_default_browser(login_url)
+
+    if browser_opened:
+        ok("Opened Tidal login in your browser")
+        console.print(f"  [dim]If the browser did not open correctly, use:[/] [link]{login_url}[/link]\n")
+    else:
+        console.print("\n  [bold bright_cyan]Open this URL in your browser:[/]\n")
+        console.print(f"  [link]{login_url}[/link]\n")
+
     with console.status("[yellow]Waiting for login...[/]", spinner="dots"):
         future.result()
     if not session.check_login():
@@ -739,6 +948,81 @@ def format_credits(raw_items):
     return grouped
 
 
+def credit_role_output_key(role):
+    if role in {"Music Publisher", "Publisher"}:
+        return None
+    return DEDICATED.get(role, role)
+
+
+def normalise_config_tag(raw):
+    normalized = normalize_config_entry(raw)
+    field = FIELD_ALIASES.get(normalized)
+    if field:
+        return field
+
+    role = normalise_role((raw or "").strip())
+    if role and role != "Unknown":
+        return credit_role_output_key(role)
+    return None
+
+
+def load_tag_name_set(path, allow_bang_prefix=False):
+    if not path.exists():
+        return False
+
+    allowed_tags = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return False
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("!"):
+            if not allow_bang_prefix:
+                continue
+            line = line[1:].strip()
+            if not line:
+                continue
+        tag = normalise_config_tag(line)
+        if not tag:
+            continue
+        allowed_tags[tag.casefold()] = tag
+
+    return set(allowed_tags.values()) if allowed_tags else False
+
+
+def load_custom_tags_filter(settings):
+    if not settings.custom_tags:
+        return None
+    return load_tag_name_set(TAGS_CONFIG_FILE)
+
+
+def load_blacklist_filter(settings):
+    if not settings.blacklisting:
+        return None
+    return load_tag_name_set(BLACKLIST_CONFIG_FILE, allow_bang_prefix=True)
+
+
+def filter_grouped_credits(grouped, allowed_tags=None, blocked_tags=None):
+    if allowed_tags is None and not blocked_tags:
+        return grouped
+
+    filtered = {}
+    for role, names in grouped.items():
+        output_key = credit_role_output_key(role)
+        if not output_key:
+            continue
+        if allowed_tags is not None and output_key not in allowed_tags:
+            continue
+        if blocked_tags and output_key in blocked_tags:
+            continue
+        filtered[role] = names
+    return filtered
+
+
 def extract_year_value(value):
     if not value:
         return ""
@@ -756,22 +1040,37 @@ def extract_year_value(value):
     return match.group(0) if match else ""
 
 
-def get_track_year(track):
-    candidates = [
-        getattr(track, "year", None),
-        getattr(track, "release_date", None),
-        getattr(track, "stream_start_date", None),
-    ]
+def normalized_name_tokens(value):
+    value = (value or "").casefold()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return [token for token in value.split() if token]
 
+
+def get_track_year(track):
     album = getattr(track, "album", None)
+    # Match the year shown on TIDAL as closely as possible by trusting the
+    # resolved album release date before falling back to track-level dates.
+    candidates = []
     if album:
         candidates.extend(
             [
-                getattr(album, "year", None),
+                getattr(album, "available_release_date", None),
                 getattr(album, "release_date", None),
+                getattr(album, "tidal_release_date", None),
                 getattr(album, "stream_start_date", None),
+                getattr(album, "year", None),
             ]
         )
+    candidates.extend(
+        [
+            getattr(track, "release_date", None),
+            getattr(track, "tidal_release_date", None),
+            getattr(track, "stream_start_date", None),
+            getattr(track, "year", None),
+            getattr(album, "copyright", None) if album else None,
+            getattr(track, "copyright", None),
+        ]
+    )
 
     for value in candidates:
         year = extract_year_value(value)
@@ -799,25 +1098,184 @@ def get_album_artist(track):
     return ", ".join(artist.name for artist in track.artists)
 
 
-def clean_lastfm_tag(tag):
+LASTFM_BLOCKED_TAGS = {
+    "seen live",
+    "favorites",
+    "favourite",
+    "favorite",
+    "awesome",
+    "love",
+    "my favorites",
+    "under 2000 listeners",
+    "under 200 listeners",
+    "male vocalists",
+    "female vocalists",
+    "spotify",
+    "apple music",
+    "youtube music",
+    "soundcloud",
+    "tidal",
+}
+
+LASTFM_LOCALE_TAGS = {
+    "afrikaans",
+    "arabic",
+    "argentina",
+    "argentinian",
+    "australia",
+    "australian",
+    "belgian",
+    "brazil",
+    "brazilian",
+    "british",
+    "canada",
+    "canadian",
+    "chinese",
+    "danish",
+    "denmark",
+    "dutch",
+    "english",
+    "european",
+    "finnish",
+    "finland",
+    "french",
+    "german",
+    "greece",
+    "greek",
+    "hindi",
+    "hungarian",
+    "india",
+    "indian",
+    "indonesian",
+    "irish",
+    "italian",
+    "japan",
+    "japanese",
+    "korean",
+    "latin american",
+    "mexican",
+    "netherlands",
+    "norway",
+    "norwegian",
+    "poland",
+    "polish",
+    "portugal",
+    "portuguese",
+    "romanian",
+    "russian",
+    "spain",
+    "spanish",
+    "sweden",
+    "swedish",
+    "turkish",
+    "uk",
+    "united kingdom",
+    "united states",
+    "usa",
+}
+
+LASTFM_GENRE_HINT_WORDS = {
+    "acoustic",
+    "alternative",
+    "ambient",
+    "blues",
+    "classical",
+    "country",
+    "dance",
+    "disco",
+    "drum",
+    "dub",
+    "dubstep",
+    "edm",
+    "electro",
+    "electronic",
+    "emo",
+    "folk",
+    "funk",
+    "garage",
+    "gospel",
+    "grime",
+    "groove",
+    "hardcore",
+    "hardstyle",
+    "hip",
+    "hop",
+    "house",
+    "indie",
+    "jazz",
+    "latin",
+    "lofi",
+    "metal",
+    "orchestral",
+    "phonk",
+    "pop",
+    "punk",
+    "rap",
+    "reggae",
+    "retro",
+    "rnb",
+    "rock",
+    "shoegaze",
+    "soul",
+    "synth",
+    "techno",
+    "trance",
+    "trap",
+    "wave",
+}
+
+LASTFM_GENRE_HINT_PHRASES = {
+    "drum and bass",
+    "hip hop",
+    "lo fi",
+    "r and b",
+    "singer songwriter",
+}
+
+
+def is_lastfm_locale_tag(tag):
+    normalized = normalize_match_text(tag)
+    return bool(normalized and normalized in LASTFM_LOCALE_TAGS)
+
+
+def score_lastfm_tag(tag):
+    normalized = normalize_match_text(tag)
+    if not normalized:
+        return -100
+
+    score = 0
+    if normalized in LASTFM_GENRE_HINT_PHRASES:
+        score += 6
+
+    tokens = normalized_name_tokens(normalized)
+    if any(token in LASTFM_GENRE_HINT_WORDS for token in tokens):
+        score += 5
+
+    if " " in normalized or "-" in tag:
+        score += 1
+
+    if normalized in {"pop", "rock", "rap", "jazz", "folk", "country", "house", "techno", "trance", "edm"}:
+        score += 2
+
+    return score
+
+
+def format_lastfm_tag_name(tag):
+    formatted = tag.title()
+    special = {
+        "Edm": "EDM",
+        "Idm": "IDM",
+        "Rnb": "R&B",
+    }
+    return special.get(formatted, formatted)
+
+
+def clean_lastfm_tag(tag, blocked_names=None):
     tag = (tag or "").strip()
     if not tag:
         return ""
     lowered = tag.lower()
-    blocked = {
-        "seen live",
-        "favorites",
-        "favourite",
-        "favorite",
-        "awesome",
-        "love",
-        "my favorites",
-        "under 2000 listeners",
-        "under 200 listeners",
-        "male vocalists",
-        "female vocalists",
-    }
-    if lowered in blocked:
+    if lowered in LASTFM_BLOCKED_TAGS:
         return ""
     if any(char.isdigit() for char in lowered):
         return ""
@@ -825,31 +1283,57 @@ def clean_lastfm_tag(tag):
         return ""
     if not re.fullmatch(r"[a-zA-Z][a-zA-Z &/+\-]*", tag):
         return ""
-    return tag.title()
+    if is_lastfm_locale_tag(tag):
+        return ""
+
+    normalized_tag = normalize_match_text(tag)
+    if blocked_names:
+        tag_tokens = set(normalized_name_tokens(normalized_tag))
+        for name in blocked_names:
+            normalized_name = normalize_match_text(name)
+            if not normalized_name:
+                continue
+            if normalized_tag == normalized_name:
+                return ""
+
+            name_tokens = set(normalized_name_tokens(normalized_name))
+            if tag_tokens and name_tokens and tag_tokens.issubset(name_tokens):
+                return ""
+
+    return format_lastfm_tag_name(tag)
 
 
-def extract_lastfm_top_tags(payload):
-    tags = payload.get("toptags", {}).get("tag", [])
-    if isinstance(tags, dict):
-        tags = [tags]
-
-    genres = []
+def pick_best_lastfm_tags(candidates, blocked_names=None):
+    ranked = []
     seen = set()
-    for item in tags:
-        name = clean_lastfm_tag(item.get("name", ""))
+    for index, raw_name in enumerate(candidates):
+        name = clean_lastfm_tag(raw_name, blocked_names=blocked_names)
         if not name:
             continue
         key = name.lower()
         if key in seen:
             continue
         seen.add(key)
-        genres.append(name)
-        if len(genres) == 2:
-            break
-    return genres
+        ranked.append((score_lastfm_tag(name), index, name))
+
+    if not ranked:
+        return []
+
+    if any(score > 0 for score, _, _ in ranked):
+        ranked = [item for item in ranked if item[0] > 0]
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [name for _, _, name in ranked[:2]]
 
 
-def fetch_lastfm_top_tags(method, params, api_key):
+def extract_lastfm_top_tags(payload, blocked_names=None):
+    tags = payload.get("toptags", {}).get("tag", [])
+    if isinstance(tags, dict):
+        tags = [tags]
+    return pick_best_lastfm_tags([item.get("name", "") for item in tags], blocked_names=blocked_names)
+
+
+def fetch_lastfm_top_tags(method, params, api_key, blocked_names=None):
     query = {
         "method": method,
         "api_key": api_key,
@@ -865,10 +1349,10 @@ def fetch_lastfm_top_tags(method, params, api_key):
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
         return []
-    return extract_lastfm_top_tags(payload)
+    return extract_lastfm_top_tags(payload, blocked_names=blocked_names)
 
 
-def fetch_lastfm_page_tags(artist, title_or_album):
+def fetch_lastfm_page_tags(artist, title_or_album, blocked_names=None):
     if not artist or not title_or_album:
         return []
 
@@ -880,20 +1364,10 @@ def fetch_lastfm_page_tags(artist, title_or_album):
         return []
 
     matches = re.findall(r'href="/tag/([^"]+)"', html, flags=re.IGNORECASE)
-    genres = []
-    seen = set()
-    for raw in matches:
-        name = clean_lastfm_tag(raw.replace("+", " ").replace("%20", " "))
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        genres.append(name)
-        if len(genres) == 2:
-            break
-    return genres
+    return pick_best_lastfm_tags(
+        [raw.replace("+", " ").replace("%20", " ") for raw in matches],
+        blocked_names=blocked_names,
+    )
 
 
 def get_track_genres(track, settings):
@@ -905,40 +1379,76 @@ def get_track_genres(track, settings):
     primary_artist = artist_names[0] if artist_names else ""
     title = getattr(track, "name", "") or getattr(track, "title", "")
     album_name = track.album.name if getattr(track, "album", None) else ""
+    blocked_names = [title, album_name, *artist_names]
 
-    genres = fetch_lastfm_top_tags("track.getTopTags", {"artist": primary_artist, "track": title}, api_key)
+    genres = fetch_lastfm_top_tags(
+        "track.getTopTags",
+        {"artist": primary_artist, "track": title},
+        api_key,
+        blocked_names=blocked_names,
+    )
     if genres:
         return ", ".join(genres)
 
     # Some Last.fm pages expose tags at the single/album level rather than the track API endpoint.
-    genres = fetch_lastfm_top_tags("album.getTopTags", {"artist": primary_artist, "album": album_name}, api_key)
+    genres = fetch_lastfm_top_tags(
+        "album.getTopTags",
+        {"artist": primary_artist, "album": album_name},
+        api_key,
+        blocked_names=blocked_names,
+    )
     if genres:
         return ", ".join(genres)
 
-    genres = fetch_lastfm_page_tags(primary_artist, title)
+    genres = fetch_lastfm_page_tags(primary_artist, title, blocked_names=blocked_names)
     if genres:
         return ", ".join(genres)
 
-    genres = fetch_lastfm_page_tags(primary_artist, album_name)
+    genres = fetch_lastfm_page_tags(primary_artist, album_name, blocked_names=blocked_names)
     if genres:
         return ", ".join(genres)
 
     return ""
 
 
-def build_kid3_row(track, credits_grouped, settings, file_path=""):
-    row = {
-        "FILE PATH": file_path,
+def stringify_tag_value(value):
+    if value in (None, ""):
+        return ""
+    return str(value)
+
+
+def build_base_row(track, settings):
+    album = getattr(track, "album", None)
+    return {
         "Title": track.name,
         "Artist": ", ".join(artist.name for artist in track.artists),
         "Album Artist": get_album_artist(track),
-        "Album": track.album.name if track.album else "",
+        "Album": album.name if album else "",
         "Date": get_track_year(track),
         "Genre": get_track_genres(track, settings),
         "ISRC": getattr(track, "isrc", ""),
         "Comment": "",
         "Picture": "",
+        "Track Number": stringify_tag_value(getattr(track, "track_num", "")),
+        "Disc Number": stringify_tag_value(getattr(track, "volume_num", "")),
+        "BPM": stringify_tag_value(getattr(track, "bpm", "")),
+        "Copyright": getattr(track, "copyright", "") or getattr(album, "copyright", "") or "",
     }
+
+
+def select_base_row_fields(base_row, allowed_tags=None, blocked_tags=None):
+    allowed_fields = set(DEFAULT_EXPORT_FIELDS) if allowed_tags is None else allowed_tags
+    blocked_fields = blocked_tags or set()
+
+    return {
+        field: base_row[field]
+        for field in EXPORT_FIELD_ORDER
+        if field in allowed_fields and field not in blocked_fields
+    }
+
+
+def build_kid3_row(track, credits_grouped, settings, file_path="", allowed_tags=None, blocked_tags=None):
+    row = select_base_row_fields(build_base_row(track, settings), allowed_tags=allowed_tags, blocked_tags=blocked_tags)
 
     dedicated_used = set()
     for role, names in credits_grouped.items():
@@ -951,10 +1461,10 @@ def build_kid3_row(track, credits_grouped, settings, file_path=""):
         dedicated_used.add(role)
 
     for role, names in credits_grouped.items():
-        if role in {"Music Publisher", "Publisher"}:
-            continue
         if role not in dedicated_used:
-            row[role] = ", ".join(names)
+            field = credit_role_output_key(role)
+            if field:
+                row[field] = ", ".join(names)
 
     return row
 
@@ -977,7 +1487,7 @@ def record_success(stats, track, grouped):
 
 def fetch_track_label(session, track_id):
     try:
-        track = session.track(track_id)
+        track = session.track(track_id, with_album=True)
         return track, track.name[:34]
     except Exception:
         return None, f"Track {track_id}"
@@ -1345,41 +1855,59 @@ def build_track_jobs(args, session, stats):
     return track_jobs
 
 
-def process_tracks(session, track_jobs, settings, stats):
+def process_tracks(session, track_jobs, settings, stats, allowed_tags=None, blocked_tags=None):
     rows = []
-    with Progress(
-        SpinnerColumn(style=ACCENT),
-        TextColumn("[bold white]{task.description}"),
-        BarColumn(bar_width=settings.progress_bar_width, style="cyan", complete_style=ACCENT),
-        TextColumn("[cyan]{task.completed}[/][dim]/{task.total}[/]"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=False,
-    ) as progress:
-        task = progress.add_task("Fetching credits", total=len(track_jobs))
+    console.print("  [bold bright_cyan]Press Space to cancel and go back to menu.[/]")
+    with CancelListener() as cancel_listener:
+        with Progress(
+            SpinnerColumn(style=ACCENT),
+            TextColumn("[bold white]{task.description}"),
+            BarColumn(bar_width=40, style="cyan", complete_style=ACCENT),
+            TextColumn("[cyan]{task.completed}[/][dim]/{task.total}[/]"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+        ) as progress:
+            task = progress.add_task("Fetching credits", total=len(track_jobs))
+            for job in track_jobs:
+                cancel_listener.raise_if_cancelled()
+                track_id = job["track_id"]
+                file_path = job["file_path"]
+                track = job.get("track")
+                if track:
+                    label = track.name[:34]
+                else:
+                    track, label = fetch_track_label(session, track_id)
+                progress.update(task, description=f"[white]{label:<36}[/]")
 
-        for job in track_jobs:
-            track_id = job["track_id"]
-            file_path = job["file_path"]
-            track = job.get("track")
-            if track:
-                label = track.name[:34]
-            else:
-                track, label = fetch_track_label(session, track_id)
-            progress.update(task, description=f"[white]{label:<36}[/]")
+                cancel_listener.raise_if_cancelled()
+                try:
+                    track = session.track(track_id, with_album=True)
+                except Exception:
+                    pass
 
-            if not track:
-                stats["failed"].append(f"ID {track_id} - could not fetch")
+                if not track:
+                    stats["failed"].append(f"ID {track_id} - could not fetch")
+                    progress.advance(task)
+                    continue
+
+                grouped = format_credits(get_credits(session, track_id))
+                grouped = filter_grouped_credits(grouped, allowed_tags=allowed_tags, blocked_tags=blocked_tags)
+                cancel_listener.raise_if_cancelled()
+                rows.append(
+                    build_kid3_row(
+                        track,
+                        grouped,
+                        settings,
+                        file_path=file_path,
+                        allowed_tags=allowed_tags,
+                        blocked_tags=blocked_tags,
+                    )
+                )
+                record_success(stats, track, grouped)
                 progress.advance(task)
-                continue
-
-            grouped = format_credits(get_credits(session, track_id))
-            rows.append(build_kid3_row(track, grouped, settings, file_path=file_path))
-            record_success(stats, track, grouped)
-            progress.advance(task)
 
     return rows
-
 
 def print_results_table(stats):
     table = Table(
@@ -1475,12 +2003,38 @@ def run_fetch_job(args, settings, session, interactive_mode=False):
             warn("No tracks to process.")
         return False
 
+    allowed_tags = load_custom_tags_filter(settings)
+    if settings.custom_tags and allowed_tags is False:
+        warn("Custom Tags is enabled, but tags.config was not found or has no valid tags.")
+        warn("Add the exact fields and credit roles you want to export, then run again.")
+        console.print()
+        return False
+
+    blocked_tags = load_blacklist_filter(settings)
+    if settings.blacklisting and blocked_tags is False:
+        warn("Blacklisting is enabled, but blacklist.conf was not found or has no valid tags.")
+        warn("Continuing without blacklist rules for this run.")
+        console.print()
+        blocked_tags = None
+
     console.print()
-    rows = process_tracks(session, track_jobs, settings, stats)
+    try:
+        rows = process_tracks(
+            session,
+            track_jobs,
+            settings,
+            stats,
+            allowed_tags=allowed_tags,
+            blocked_tags=blocked_tags,
+        )
+    except ProcessCancellation:
+        console.print()
+        warn("Process cancelled. Returning to menu.")
+        console.print()
+        return False
 
     write_json(rows, output_path)
-    if settings.save_session_on_exit:
-        save_session(session)
+    save_session(session)
     print_summary(stats, output_path, time.time() - start_time, settings)
     return True
 
@@ -1502,6 +2056,7 @@ def build_parser():
 
     parser.add_argument("--output", default="tidal_credits.json")
     parser.add_argument("--file-path", default="")
+    parser.add_argument("--logout", action="store_true")
     parser.add_argument("--settings", action="store_true")
     parser.add_argument("--reset-settings", action="store_true")
     parser.add_argument("-h", "--help", action="store_true")
@@ -1519,59 +2074,88 @@ def apply_settings_actions(args, settings):
 
 
 def main(argv=None):
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        parser = build_parser()
+        args = parser.parse_args(argv)
 
-    settings = load_settings()
-    has_source = any(
-        [
-            args.source,
-            args.track_id,
-            args.track_url,
-            args.album_id,
-            args.playlist_url,
-            args.folder,
-            args.search,
-            args.input,
-        ]
-    )
+        settings = load_settings()
+        has_source = any(
+            [
+                args.source,
+                args.track_id,
+                args.track_url,
+                args.album_id,
+                args.playlist_url,
+                args.folder,
+                args.search,
+                args.input,
+            ]
+        )
 
-    if (args.settings or args.reset_settings) and not has_source and not args.help:
-        print_header()
-        apply_settings_actions(args, settings)
-        return
+        if (args.settings or args.reset_settings) and not has_source and not args.help:
+            print_header()
+            apply_settings_actions(args, settings)
+            return 0
 
-    no_source = not has_source
-    if args.help:
-        print_header()
-        print_usage()
-        return
+        if args.logout and not has_source and not args.help:
+            print_header()
+            logout_result = clear_saved_session()
+            if logout_result is True:
+                ok("Saved Tidal session removed. You will be asked to log in next time.")
+            elif logout_result is False:
+                warn("No saved Tidal session was found.")
+            else:
+                fail(f"Could not remove saved session: {SESSION_FILE}")
+            console.print()
+            return 0
 
-    interactive_mode = no_source
-    session = None
+        no_source = not has_source
+        if args.help:
+            print_header()
+            print_usage()
+            return 0
 
-    if interactive_mode:
-        show_home = True
-        while True:
-            clear_source_args(args)
-            source = prompt_for_source(settings, show_home=show_home)
-            if not source:
-                return
-            args.source = source
-            show_home = False
+        interactive_mode = no_source
+        session = None
 
-            if session is None:
-                session = load_session()
-                console.print()
+        if interactive_mode:
+            show_home = True
+            while True:
+                clear_source_args(args)
+                source = prompt_for_source(settings, show_home=show_home)
+                if not source:
+                    return 0
+                if source == "__logout__":
+                    logout_result = clear_saved_session()
+                    if logout_result is True:
+                        ok("Saved Tidal session removed. You will be asked to log in again.")
+                        session = None
+                    elif logout_result is False:
+                        warn("No saved Tidal session was found.")
+                    else:
+                        fail(f"Could not remove saved session: {SESSION_FILE}")
+                    console.print()
+                    show_home = True
+                    continue
+                args.source = source
+                show_home = False
 
-            run_fetch_job(args, settings, session, interactive_mode=True)
-    else:
-        print_header()
-        settings = apply_settings_actions(args, settings)
-        session = load_session()
-        console.print()
-        run_fetch_job(args, settings, session, interactive_mode=False)
+                if session is None:
+                    session = load_session(settings)
+                    console.print()
+
+                run_fetch_job(args, settings, session, interactive_mode=True)
+        else:
+            print_header()
+            settings = apply_settings_actions(args, settings)
+            session = load_session(settings)
+            console.print()
+            run_fetch_job(args, settings, session, interactive_mode=False)
+        return 0
+    except KeyboardInterrupt:
+        handle_interrupt()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
